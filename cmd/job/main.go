@@ -16,6 +16,7 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Product struct {
@@ -28,10 +29,11 @@ type Product struct {
 	Description string  `json:"description"`
 }
 
-var BATCH_SIZE = 100
+var BATCH_SIZE = 2000
 
 func main() {
 
+	start := time.Now()
 	envErr := godotenv.Load()
 	if envErr != nil {
 		log.Fatal(envErr)
@@ -63,6 +65,9 @@ func main() {
 		log.Fatal(dbConnErr)
 	}
 
+	cp1 := time.Now()
+	fmt.Println("objeyi çektik db bağladık : ", time.Since(start))
+
 	scanner := bufio.NewScanner(result.Body)
 	defer result.Body.Close()
 
@@ -80,13 +85,16 @@ func main() {
 
 	}
 
-	for i := range len(products)/BATCH_SIZE + 1 {
-		insertProducts(db, products[i*BATCH_SIZE:(i+1)*BATCH_SIZE])
-	}
+	fmt.Println("scan time: ", time.Since(cp1))
+	cp2 := time.Now()
 
+	insertProducts(db, products, BATCH_SIZE)
+
+	fmt.Println("insert süresi : ", time.Since(cp2))
 }
 
-func insertProducts(db *sql.DB, products []Product) {
+func insertProducts(db *sql.DB, products []Product, batchSize int) error {
+
 	query := "insert into products (id,price,title, category, brand, url, description) values "
 
 	var (
@@ -94,24 +102,67 @@ func insertProducts(db *sql.DB, products []Product) {
 		valueVals    []interface{}
 	)
 
-	for i, p := range products {
+	residual := len(products) % BATCH_SIZE
+	batchCount := len(products) / BATCH_SIZE
+
+	for i := range BATCH_SIZE {
 		values := fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d)", 7*i+1, 7*i+2, 7*i+3, 7*i+4, 7*i+5, 7*i+6, 7*i+7)
 		valueStrings = append(valueStrings, values)
-		valueVals = append(valueVals, p.ID, p.Price, p.Title, p.Category, p.Brand, p.Url, p.Description)
 	}
-	queryString := query + strings.Join(valueStrings, ",")
 
+	queryString := query + strings.Join(valueStrings, ",")
+	stmt, queryPrepareErr := db.Prepare(queryString)
+	defer stmt.Close()
+	if queryPrepareErr != nil {
+		return queryPrepareErr
+	}
+
+	for n_batch := range batchCount {
+
+		for i := range BATCH_SIZE {
+			p := products[n_batch*BATCH_SIZE+i]
+			valueVals = append(valueVals, p.ID, p.Price, p.Title, p.Category, p.Brand, p.Url, p.Description)
+		}
+		_, queryExecErr := stmt.Exec(valueVals...)
+		if queryExecErr != nil {
+			return queryExecErr
+		}
+
+		valueVals = valueVals[:0]
+	}
+
+	if residual != 0 {
+		valueStrings = valueStrings[:0]
+		for i := range residual {
+			values := fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d)", 7*i+1, 7*i+2, 7*i+3, 7*i+4, 7*i+5, 7*i+6, 7*i+7)
+			valueStrings = append(valueStrings, values)
+			p := products[batchCount*BATCH_SIZE+i]
+			valueVals = append(valueVals, p.ID, p.Price, p.Title, p.Category, p.Brand, p.Url, p.Description)
+		}
+
+		queryString = query + strings.Join(valueStrings, ",")
+
+		_, err := db.Exec(queryString, valueVals...)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func executeQueryWithPrepare(queryString string, valueVals []interface{}, db *sql.DB) error {
 	stmt, queryPrepareErr := db.Prepare(queryString)
 	if queryPrepareErr != nil {
-		log.Fatal(queryPrepareErr)
+		return queryPrepareErr
 	}
-
-	defer stmt.Close()
 
 	_, queryExecErr := stmt.Exec(valueVals...)
 	if queryExecErr != nil {
-		log.Fatal("exec error: ", queryExecErr)
+		return queryExecErr
 	}
+
+	return nil
 }
 
 func createS3Session() (*s3.S3, error) {
