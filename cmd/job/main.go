@@ -16,6 +16,7 @@ import (
 	"runtime/pprof"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,11 +30,12 @@ type Product struct {
 	Description string  `json:"description"`
 }
 
-var BATCH_SIZE = 2000
+const BATCH_SIZE = 2000
 
 func main() {
 
 	start := time.Now()
+
 	envErr := godotenv.Load()
 	if envErr != nil {
 		log.Fatal(envErr)
@@ -65,35 +67,73 @@ func main() {
 		log.Fatal(dbConnErr)
 	}
 
-	cp1 := time.Now()
-	fmt.Println("objeyi çektik db bağladık : ", time.Since(start))
-
 	scanner := bufio.NewScanner(result.Body)
 	defer result.Body.Close()
 
-	var products []Product
+	nWorker := 1
+	results := make(chan *Product, nWorker)
+	parsingJobs := make(chan []byte, nWorker)
+	wg := sync.WaitGroup{}
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		var p Product
-		jsonErr := json.Unmarshal(line, &p)
-		if jsonErr != nil {
-			log.Println(jsonErr)
+	for _ = range nWorker {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			worker(parsingJobs, results)
+		}()
+	}
+	go func() {
+		// Scanning thread
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			lineCopy := make([]byte, len(line))
+			copy(lineCopy, scanner.Bytes())
+			parsingJobs <- lineCopy
 		}
+		close(parsingJobs)
+		wg.Wait()
+		close(results)
+	}()
 
-		products = append(products, p)
+	products := make([]*Product, BATCH_SIZE)
+	i := 0
 
+	//insert to db in batches
+	for product := range results {
+		products[i] = product
+		if i == BATCH_SIZE-1 {
+			insertErr := insertProducts(db, products, BATCH_SIZE)
+			if insertErr != nil {
+				log.Fatal("error on insertion : ", insertErr)
+			}
+			i = 0
+			continue
+		}
+		i++
+	}
+	if len(products) != 0 {
+		residualInsertErr := insertProducts(db, products[:i], len(products))
+		if residualInsertErr != nil {
+			log.Fatal(residualInsertErr)
+		}
 	}
 
-	fmt.Println("scan time: ", time.Since(cp1))
-	cp2 := time.Now()
-
-	insertProducts(db, products, BATCH_SIZE)
-
-	fmt.Println("insert süresi : ", time.Since(cp2))
+	fmt.Println("Total duration: ", time.Since(start))
 }
 
-func insertProducts(db *sql.DB, products []Product, batchSize int) error {
+func worker(parsingJobs <-chan []byte, results chan<- *Product) {
+	for line := range parsingJobs {
+		p := new(Product)
+		err := json.Unmarshal(line, p)
+		if err != nil {
+			log.Fatal("json parsing error: ", err)
+		}
+		results <- p
+	}
+
+}
+
+func insertProducts(db *sql.DB, products []*Product, batchSize int) error {
 
 	query := "insert into products (id,price,title, category, brand, url, description) values "
 
