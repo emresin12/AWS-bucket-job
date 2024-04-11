@@ -102,10 +102,10 @@ func insertProducts(db *sql.DB, products []Product, batchSize int) error {
 		valueVals    []interface{}
 	)
 
-	residual := len(products) % BATCH_SIZE
-	batchCount := len(products) / BATCH_SIZE
+	residual := len(products) % batchSize
+	batchCount := len(products) / batchSize
 
-	for i := range BATCH_SIZE {
+	for i := range batchSize {
 		values := fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d)", 7*i+1, 7*i+2, 7*i+3, 7*i+4, 7*i+5, 7*i+6, 7*i+7)
 		valueStrings = append(valueStrings, values)
 	}
@@ -119,8 +119,8 @@ func insertProducts(db *sql.DB, products []Product, batchSize int) error {
 
 	for n_batch := range batchCount {
 
-		for i := range BATCH_SIZE {
-			p := products[n_batch*BATCH_SIZE+i]
+		for i := range batchSize {
+			p := products[n_batch*batchSize+i]
 			valueVals = append(valueVals, p.ID, p.Price, p.Title, p.Category, p.Brand, p.Url, p.Description)
 		}
 		_, queryExecErr := stmt.Exec(valueVals...)
@@ -136,7 +136,7 @@ func insertProducts(db *sql.DB, products []Product, batchSize int) error {
 		for i := range residual {
 			values := fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d)", 7*i+1, 7*i+2, 7*i+3, 7*i+4, 7*i+5, 7*i+6, 7*i+7)
 			valueStrings = append(valueStrings, values)
-			p := products[batchCount*BATCH_SIZE+i]
+			p := products[batchCount*batchSize+i]
 			valueVals = append(valueVals, p.ID, p.Price, p.Title, p.Category, p.Brand, p.Url, p.Description)
 		}
 
@@ -146,20 +146,6 @@ func insertProducts(db *sql.DB, products []Product, batchSize int) error {
 		if err != nil {
 			return err
 		}
-	}
-
-	return nil
-}
-
-func executeQueryWithPrepare(queryString string, valueVals []interface{}, db *sql.DB) error {
-	stmt, queryPrepareErr := db.Prepare(queryString)
-	if queryPrepareErr != nil {
-		return queryPrepareErr
-	}
-
-	_, queryExecErr := stmt.Exec(valueVals...)
-	if queryExecErr != nil {
-		return queryExecErr
 	}
 
 	return nil
