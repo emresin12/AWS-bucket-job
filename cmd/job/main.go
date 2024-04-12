@@ -150,7 +150,7 @@ func insertProducts(db *sql.DB, products []*Product, batchSize int) error {
 		valueStrings = append(valueStrings, values)
 	}
 
-	queryString := query + strings.Join(valueStrings, ",")
+	queryString := query + strings.Join(valueStrings, ",") + " ON CONFLICT (id) DO NOTHING"
 	stmt, queryPrepareErr := db.Prepare(queryString)
 	defer stmt.Close()
 	if queryPrepareErr != nil {
@@ -180,7 +180,7 @@ func insertProducts(db *sql.DB, products []*Product, batchSize int) error {
 			valueVals = append(valueVals, p.ID, p.Price, p.Title, p.Category, p.Brand, p.Url, p.Description)
 		}
 
-		queryString = query + strings.Join(valueStrings, ",")
+		queryString = query + strings.Join(valueStrings, ",") + " ON CONFLICT (id) DO NOTHING"
 
 		_, err := db.Exec(queryString, valueVals...)
 		if err != nil {
