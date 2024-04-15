@@ -53,3 +53,5 @@ Thumbs.db
 *.prof
 cpu.prof
 .env
+*.jsonl
+.out

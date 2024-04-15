@@ -10,8 +10,14 @@ import (
 )
 
 type Config struct {
-	Database database.PostgresConfig
-	S3       awswrapper.S3ClientConfig
+	Database  database.PostgresConfig
+	S3        awswrapper.S3ClientConfig
+	ServerCfg ServerConfig
+}
+
+type ServerConfig struct {
+	Host string
+	Port string
 }
 
 func LoadConfigs() *Config {
@@ -36,8 +42,15 @@ func LoadConfigs() *Config {
 		BucketName: os.Getenv("AWS_S3_DEFAULT_BUCKET_NAME"),
 	}
 
-	configs := Config{Database: dbConf,
-		S3: s3ClientConfig,
+	serverConf := ServerConfig{
+		Host: os.Getenv("SERVER_HOST"),
+		Port: os.Getenv("SERVER_PORT"),
+	}
+
+	configs := Config{
+		Database:  dbConf,
+		S3:        s3ClientConfig,
+		ServerCfg: serverConf,
 	}
 
 	return &configs

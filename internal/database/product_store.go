@@ -3,6 +3,7 @@ package database
 import (
 	"cimri/internal/model"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -73,4 +74,21 @@ func (store *ProductStore) InsertProductsInBatches(products []*model.Product, ba
 	}
 
 	return nil
+}
+
+func (store *ProductStore) GetById(id int) (*model.Product, error) {
+	query := "select * from products where id=$1"
+
+	row := store.db.QueryRow(query, id)
+	p := &model.Product{}
+	err := row.Scan(&p.ID, &p.Price, &p.Title, &p.Category, &p.Brand, &p.Url, &p.Description)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("no product found with id: %d", id)
+		}
+		return nil, err
+	}
+
+	return p, nil
+
 }

@@ -6,7 +6,7 @@ import (
 	"cimri/internal/awswrapper"
 	"cimri/internal/database"
 	"cimri/internal/model"
-	"database/sql"
+	"context"
 	"encoding/json"
 	"fmt"
 	_ "github.com/lib/pq"
@@ -19,8 +19,8 @@ import (
 	"time"
 )
 
-const BATCH_SIZE = 4000
-const N_WORKER = 2
+const BatchSize = 4000
+const NWorker = 3
 
 func main() {
 
@@ -53,86 +53,99 @@ func main() {
 		log.Fatal(s3ClientErr)
 	}
 
-	DB, dbConnErr := database.NewConnection(configs.Database)
-	if dbConnErr != nil {
-		log.Fatal(dbConnErr)
-	}
+	DB := database.NewConnection(configs.Database)
 	defer DB.Close()
 
-	processingErr := processFiles(s3Client, DB)
-	if processingErr != nil {
-		return
+	productStore := database.NewProductStore(DB)
+
+	objectKeys := []string{"products-1.jsonl", "products-2.jsonl", "products-3.jsonl", "products-4.jsonl"}
+	processErr := processFiles(s3Client, productStore, objectKeys)
+	if processErr != nil {
+		log.Println(processErr)
 	}
 
 	fmt.Println("Total duration: ", time.Since(start))
 }
 
-func processFiles(s3Client *awswrapper.S3Client, DB *sql.DB) error {
-	productStore := database.NewProductStore(DB)
+func processFiles(s3Client *awswrapper.S3Client, productStore *database.ProductStore, objectKeys []string) error {
 
-	objectOutput1, s3GetObjectErr := s3Client.GetObjectFromBucket("products-1.jsonl")
-	if s3GetObjectErr != nil {
-		log.Fatal(s3GetObjectErr)
+	var outputScanners []*bufio.Scanner
+
+	for _, key := range objectKeys {
+		output, s3GetObjectErr := s3Client.GetObjectFromBucket(key)
+		defer output.Body.Close()
+		if s3GetObjectErr != nil {
+			log.Fatal(s3GetObjectErr)
+		}
+
+		outputScanners = append(outputScanners, bufio.NewScanner(output.Body))
 	}
-	defer objectOutput1.Body.Close()
 
-	//f, err := os.Open("output.jsonl")
-	//if err != nil {
-	//	return err
+	//for _, key := range objectKeys {
+	//	f, err := os.Open(key)
+	//	if err != nil {
+	//		return err
+	//	}
+	//	outputScanners = append(outputScanners, bufio.NewScanner(f))
+	//
 	//}
-
-	scanner := bufio.NewScanner(objectOutput1.Body)
-	//scanner = bufio.NewScanner(f)
 
 	productCh := make(chan *model.Product, 32)
 	lineCh := make(chan []byte, 32)
-	wg := sync.WaitGroup{}
 
-	// Start workers
-	for _ = range N_WORKER {
-		wg.Add(1)
-		go func() {
-			for line := range lineCh {
-				p := new(model.Product)
-				err := json.Unmarshal(line, p)
-				if err != nil {
-					log.Fatal(err)
-				}
-				productCh <- p
-			}
-			wg.Done()
-
-		}()
-	}
 	// Scan input and send to workers
-	go func() {
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			lineCh <- append(make([]byte, 0, len(line)), line...)
-		}
-		close(lineCh)
-		wg.Wait()
-		close(productCh)
+	scannerWg := sync.WaitGroup{}
+	for i, scanner := range outputScanners {
+		scannerWg.Add(1)
+		scanner := scanner
+		i := i
+		go func() {
 
+			region := trace.StartRegion(context.Background(), "readerregion"+string(rune(i)))
+			scannerRoutine(&scannerWg, scanner, lineCh)
+			region.End()
+		}()
+		// To close the channel after all scanners are done
+	}
+	go func() {
+		scannerWg.Wait()
+		close(lineCh)
 	}()
 
-	products := make([]*model.Product, BATCH_SIZE)
+	wgParser := sync.WaitGroup{}
+	// Start workers
+	for i := range NWorker {
+
+		wgParser.Add(1)
+		go func() {
+			region := trace.StartRegion(context.Background(), "parser"+string(rune(i)))
+			parserRoutine(&wgParser, lineCh, productCh)
+			region.End()
+		}()
+
+	}
+	go func() {
+		wgParser.Wait()
+		close(productCh)
+	}()
+
+	products := make([]*model.Product, BatchSize)
 
 	wgInsert := sync.WaitGroup{}
 	i := 0
 	//insert to DB in batches
+	regioninsert := trace.StartRegion(context.Background(), "insertregion")
 	for product := range productCh {
 		products[i] = product
-		if i == BATCH_SIZE-1 {
-			copyProducts := append(make([]*model.Product, 0, BATCH_SIZE), products...)
+		if i == BatchSize-1 {
+			copyProducts := append(make([]*model.Product, 0, BatchSize), products...)
 			wgInsert.Add(1)
 			go func() {
 				defer wgInsert.Done()
-				mainInsertErr := productStore.InsertProductsInBatches(copyProducts, BATCH_SIZE)
+				mainInsertErr := productStore.InsertProductsInBatches(copyProducts, BatchSize)
 				if mainInsertErr != nil {
 					log.Fatal(mainInsertErr)
 				}
-
 			}()
 
 			i = 0
@@ -146,6 +159,7 @@ func processFiles(s3Client *awswrapper.S3Client, DB *sql.DB) error {
 			log.Fatal(residualInsertErr)
 		}
 	}
+	regioninsert.End()
 
 	wgInsert.Wait()
 
@@ -153,8 +167,28 @@ func processFiles(s3Client *awswrapper.S3Client, DB *sql.DB) error {
 
 }
 
-func getFileToLocal(r io.Reader, isHalting bool) {
-	file, err := os.Create("output.jsonl")
+func scannerRoutine(wg *sync.WaitGroup, scanner *bufio.Scanner, lineCh chan<- []byte) {
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		lineCh <- append(make([]byte, 0, len(line)), line...)
+	}
+	wg.Done()
+}
+
+func parserRoutine(wg *sync.WaitGroup, lineCh <-chan []byte, productCh chan<- *model.Product) {
+	for line := range lineCh {
+		p := new(model.Product)
+		err := json.Unmarshal(line, p)
+		if err != nil {
+			log.Fatal(err)
+		}
+		productCh <- p
+	}
+	wg.Done()
+}
+
+func getFileToLocal(r io.Reader, name string, isHalting bool) {
+	file, err := os.Create(name)
 	if err != nil {
 		log.Fatal(err)
 	}
