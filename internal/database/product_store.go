@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 )
 
@@ -18,6 +17,11 @@ func NewProductStore(db *sql.DB) *ProductStore {
 }
 
 func (store *ProductStore) InsertProductsInBatches(products []*model.Product, batchSize int) error {
+
+	tx, err := store.db.Begin()
+	if err != nil {
+		return err
+	}
 
 	query := "insert into products (id,price,title, category, brand, url, description) values "
 
@@ -35,12 +39,13 @@ func (store *ProductStore) InsertProductsInBatches(products []*model.Product, ba
 	}
 
 	queryString := query + strings.Join(valueStrings, ",") + " ON CONFLICT (id) DO NOTHING"
-	stmt, queryPrepareErr := store.db.Prepare(queryString)
+	stmt, queryPrepareErr := tx.Prepare(queryString)
 	defer stmt.Close()
-
 	if queryPrepareErr != nil {
-		log.Fatal("prepare err: ", queryPrepareErr)
+		tx.Rollback()
+		return queryPrepareErr
 	}
+
 	for n_batch := range batchCount {
 
 		for i := range batchSize {
@@ -50,6 +55,7 @@ func (store *ProductStore) InsertProductsInBatches(products []*model.Product, ba
 
 		_, queryExecErr := stmt.Exec(valueVals...)
 		if queryExecErr != nil {
+			tx.Rollback()
 			return queryExecErr
 		}
 
@@ -67,10 +73,16 @@ func (store *ProductStore) InsertProductsInBatches(products []*model.Product, ba
 
 		queryString = query + strings.Join(valueStrings, ",") + " ON CONFLICT (id) DO NOTHING"
 
-		_, err := store.db.Exec(queryString, valueVals...)
+		_, err := tx.Exec(queryString, valueVals...)
 		if err != nil {
+			tx.Rollback()
 			return err
 		}
+	}
+
+	commitErr := tx.Commit()
+	if commitErr != nil {
+		return commitErr
 	}
 
 	return nil
