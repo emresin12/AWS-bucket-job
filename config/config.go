@@ -3,8 +3,6 @@ package config
 import (
 	"cimri/internal/awswrapper"
 	"cimri/internal/database"
-	"github.com/joho/godotenv"
-	"log"
 	"os"
 	"strconv"
 )
@@ -21,10 +19,6 @@ type ServerConfig struct {
 }
 
 func LoadConfigs() *Config {
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal("Error loading env variables: ", err)
-	}
 
 	port, _ := strconv.Atoi(os.Getenv("POSTGRES_PORT"))
 	dbConf := database.PostgresConfig{

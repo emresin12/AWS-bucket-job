@@ -54,6 +54,7 @@ func main() {
 	}
 
 	DB := database.NewConnection(configs.Database)
+	database.InitDB(DB)
 	defer DB.Close()
 
 	productStore := database.NewProductStore(DB)
@@ -117,6 +118,7 @@ func processFiles(s3Client *awswrapper.S3Client, productStore *database.ProductS
 	for i := range NWorker {
 
 		wgParser.Add(1)
+		i := i
 		go func() {
 			region := trace.StartRegion(context.Background(), "parser"+string(rune(i)))
 			parserRoutine(&wgParser, lineCh, productCh)

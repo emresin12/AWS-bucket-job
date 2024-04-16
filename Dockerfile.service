@@ -1,0 +1,18 @@
+FROM golang:alpine as builder
+LABEL authors="emresin"
+
+RUN apk update && apk add --no-cache git bash build-base
+
+
+WORKDIR src/app
+
+COPY . .
+
+RUN go mod tidy
+RUN go build -o /app/service ./cmd/service
+
+FROM  alpine
+
+COPY --from=builder /app/service /app/service
+
+CMD /app/service
