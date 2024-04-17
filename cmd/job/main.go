@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	_ "github.com/lib/pq"
+	"io"
 	"log"
+	"os"
 	"sync"
 	"time"
 )
@@ -35,7 +37,6 @@ func main() {
 	productStore := database.NewProductStore(DB)
 
 	objectKeys := []string{"products-1.jsonl", "products-2.jsonl", "products-3.jsonl", "products-4.jsonl"}
-
 	processErr := processFiles(s3Client, productStore, objectKeys)
 	if processErr != nil {
 		log.Println(processErr)
@@ -57,6 +58,15 @@ func processFiles(s3Client *awswrapper.S3Client, productStore *database.ProductS
 
 		outputScanners = append(outputScanners, bufio.NewScanner(output.Body))
 	}
+
+	//for _, key := range objectKeys {
+	//	f, err := os.Open(key)
+	//	if err != nil {
+	//		return err
+	//	}
+	//	outputScanners = append(outputScanners, bufio.NewScanner(f))
+	//
+	//}
 
 	productCh := make(chan *model.Product, 32)
 	lineCh := make(chan []byte, 32)
@@ -146,4 +156,32 @@ func parserRoutine(wg *sync.WaitGroup, lineCh <-chan []byte, productCh chan<- *m
 		productCh <- p
 	}
 	wg.Done()
+}
+
+func getFileToLocal(r io.Reader, name string, isHalting bool) {
+	file, err := os.Create(name)
+	if err != nil {
+		log.Fatal(err)
+	}
+	buf := make([]byte, 1024)
+	rd := bufio.NewReader(r)
+	for {
+		// read a chunk
+		n, err := rd.Read(buf)
+		if err != nil && err != io.EOF {
+			panic(err)
+		}
+		if n == 0 {
+			break
+		}
+
+		// write a chunk
+		if _, err := file.Write(buf[:n]); err != nil {
+			panic(err)
+		}
+	}
+	if isHalting {
+		os.Exit(0)
+	}
+
 }
